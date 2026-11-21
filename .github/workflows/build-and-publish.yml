@@ -95,7 +95,7 @@ jobs:
             type=raw,value=${{ steps.phpver.outputs.full }}
             type=raw,value=latest,enable=${{ matrix.php == '8.6' }}
 
-      - name: Build image (PR: load locally; publish: push by digest only)
+      - name: "Build image (PR load locally; publish push by digest)"
         id: build
         uses: docker/build-push-action@v6
         with:
