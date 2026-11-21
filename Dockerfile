@@ -108,8 +108,10 @@ ARG LDFLAGS_COMMON
 # Pin mbedTLS from Alpine (static libs + headers). APKINDEX checksums are
 # arch-specific; pinning package version against alpine:${ALPINE_VERSION} is
 # the reproducibility lever used here.
+# linux-headers: curl/mbedTLS builds are fine without it on amd64; keep for
+# consistency with other compile stages (kernel UAPI on aarch64).
 RUN apk add --no-cache \
-      build-base autoconf automake libtool pkgconf wget \
+      build-base linux-headers autoconf automake libtool pkgconf wget \
       "mbedtls-dev=${MBEDTLS_PKGVER}" \
       "mbedtls-static=${MBEDTLS_PKGVER}"
 
@@ -181,8 +183,10 @@ ARG MBEDTLS_PKGVER
 ARG CFLAGS_COMMON
 ARG LDFLAGS_COMMON
 
+# linux-headers required on aarch64: ext/standard/crc32.c includes <asm/hwcap.h>
+# (HWCAP_CRC32). Alpine ships that UAPI header in linux-headers.
 RUN apk add --no-cache \
-      build-base autoconf automake bison re2c pkgconf wget python3 \
+      build-base linux-headers autoconf automake bison re2c pkgconf wget python3 \
       argp-standalone \
       "mbedtls-dev=${MBEDTLS_PKGVER}" \
       "mbedtls-static=${MBEDTLS_PKGVER}"

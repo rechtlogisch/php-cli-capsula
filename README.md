@@ -73,16 +73,16 @@ by CI/deploy scripts (`cat`, `cp`, `mv`, `rm`, `ls`, `mkdir`, `chmod`, `ln`,
 
 Prior research vs measured on this repo’s Dockerfiles (Nov 2026 local build):
 
-| Component | Research | Measured |
-| --- | --- | --- |
-| PHP 8.3 binary | ~5.0 MB | **4.80 MB** (`5030296`) |
-| PHP 8.4 binary | ~5.1 MB | *(CI)* |
-| PHP 8.5 / 8.6 binary | ~7.9 MB | **8.6: 9.74 MB** (`10217000`) |
-| Capsula rootfs 8.3 | — | **6.83 MB** |
-| Capsula rootfs 8.6 | — | **11.78 MB** |
-| OpenSSH client (`ssh`) | — | **0.65 MB** |
-| BusyBox | — | **0.26 MB** |
-| Whole deployer image using this base | ~8.8–11.8 MB | *(consumer)* |
+| Component | Research | amd64 measured | arm64 measured |
+| --- | --- | --- | --- |
+| PHP 8.3 binary | ~5.0 MB | **4.80 MB** | **5.01 MB** |
+| PHP 8.4 binary | ~5.1 MB | *(CI)* | *(CI)* |
+| PHP 8.5 / 8.6 binary | ~7.9 MB | **8.6: 9.74 MB** | **8.6: 9.58 MB** |
+| Capsula rootfs 8.3 | — | **6.83 MB** | **7.25 MB** |
+| Capsula rootfs 8.6 | — | **11.78 MB** | **11.83 MB** |
+| OpenSSH client (`ssh`) | — | **0.65 MB** | **0.69 MB** |
+| BusyBox | — | **0.26 MB** | **0.31 MB** |
+| Whole deployer image using this base | ~8.8–11.8 MB | *(consumer)* | *(consumer)* |
 
 PHP 8.6 is larger than the earlier ~7.9 MB estimate (OPcache + lexbor + uri are
 unavoidable on 8.5+; curl/mbedTLS static link also adds weight). CI prints
@@ -132,6 +132,12 @@ After a successful publish on `main`, a `repository_dispatch` of type
 docker build --build-arg PHP_VERSION=8.6.0 -t php-cli-capsula:8.6 .
 ./scripts/smoke-test.sh php-cli-capsula:8.6 8.6
 ```
+
+Apple Silicon / `linux/arm64` works the same way (Docker Desktop). The PHP
+stage needs Alpine `linux-headers` so `ext/standard/crc32.c` can include
+`<asm/hwcap.h>` (`HWCAP_CRC32`); that package is already in the Dockerfile.
+Cross-building with QEMU is slow; prefer a native arm64 builder when possible.
+CI already builds arm64 natively on `ubuntu-24.04-arm` for every PR.
 
 ## License
 
