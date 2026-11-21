@@ -1,0 +1,7 @@
+.git
+.github
+expected
+README.md
+LICENSE
+**/*.md
+scripts/smoke-test.sh

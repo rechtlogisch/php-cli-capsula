@@ -1,0 +1,18 @@
+[PHP Modules]
+Core
+curl
+date
+hash
+iconv
+json
+lexbor
+pcre
+random
+Reflection
+SPL
+standard
+uri
+Zend OPcache
+
+[Zend Modules]
+Zend OPcache
