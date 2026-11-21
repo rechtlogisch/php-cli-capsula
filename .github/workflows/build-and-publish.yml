@@ -1,0 +1,271 @@
+name: build-and-publish
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 06:17 UTC
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+  # Provenance attestations (mode=max) for publish events
+  id-token: write
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: rechtlogisch/php-cli-capsula
+  DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+jobs:
+  build:
+    name: build (${{ matrix.php }}, ${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: "8.3"
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - php: "8.3"
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - php: "8.4"
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - php: "8.4"
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - php: "8.5"
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - php: "8.5"
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - php: "8.6"
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - php: "8.6"
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve full PHP version from php.net
+        id: phpver
+        shell: bash
+        run: |
+          set -euo pipefail
+          mm="${{ matrix.php }}"
+          meta="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=${mm}&max=1")"
+          full="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(next(iter(d)))" "$meta")"
+          echo "full=${full}" >> "$GITHUB_OUTPUT"
+          echo "Resolved PHP ${mm} -> ${full}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (OCI labels + annotations)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          labels: |
+            org.opencontainers.image.description=Minimal static PHP CLI (curl, iconv) with OpenSSH client and BusyBox
+            org.opencontainers.image.title=php-cli-capsula
+          annotations: |
+            org.opencontainers.image.description=Minimal static PHP CLI (curl, iconv) with OpenSSH client and BusyBox
+            org.opencontainers.image.title=php-cli-capsula
+          tags: |
+            type=raw,value=${{ matrix.php }}
+            type=raw,value=${{ steps.phpver.outputs.full }}
+            type=raw,value=latest,enable=${{ matrix.php == '8.6' }}
+
+      - name: Build image (PR: load locally; publish: push by digest only)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          # Never push tags from the build job; digests are merged in `merge`.
+          # On pull_request: build+load only (no registry push).
+          # PR: load into the local docker daemon for smoke tests (no registry push).
+          # Publish events: push by digest only; tags are applied in the merge job.
+          push: false
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ github.event_name == 'pull_request' && format('php-cli-capsula:php{0}', matrix.php) || '' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            PHP_VERSION=${{ steps.phpver.outputs.full }}
+          provenance: ${{ github.event_name == 'pull_request' && 'false' || 'mode=max' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=php${{ matrix.php }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=php${{ matrix.php }}-${{ matrix.platform }}
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, env.IMAGE_NAME) || '' }}
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            IMAGE="php-cli-capsula:php${{ matrix.php }}"
+          else
+            DIGEST="${{ steps.build.outputs.digest }}"
+            IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+            docker pull "${IMAGE}"
+            # Also tag locally for a stable name in logs
+            docker tag "${IMAGE}" "php-cli-capsula:php${{ matrix.php }}"
+          fi
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh "${IMAGE}" "${{ matrix.php }}" | tee /tmp/smoke.out
+
+          {
+            echo "### PHP ${{ matrix.php }} (${{ matrix.platform }})"
+            echo '```'
+            docker run --rm "${IMAGE}" sh -c '
+              php -v | head -n 1
+              php -r "echo \"curl \".curl_version()[\"version\"].PHP_EOL;"
+              ssh -V
+              echo "busybox: static $(wc -c < /bin/busybox) bytes"
+              cat /.capsula/sizes.env 2>/dev/null || true
+            '
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          safe_platform="$(echo "${{ matrix.platform }}" | tr '/' '-')"
+          # digest value is like sha256:abc...
+          echo "${digest#sha256:}" > "/tmp/digests/${{ matrix.php }}-${safe_platform}"
+          ls -la /tmp/digests
+          cat /tmp/digests/*
+
+      - name: Upload digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-php${{ matrix.php }}-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge multi-arch manifests
+    # Publish only on main push, schedule, or workflow_dispatch — never on pull_request.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve full PHP versions
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mm in 8.3 8.4 8.5 8.6; do
+            meta="$(curl -fsSL "https://www.php.net/releases/index.php?json&version=${mm}&max=1")"
+            full="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(next(iter(d)))" "$meta")"
+            key="php${mm//./}"
+            echo "${key}=${full}" >> "$GITHUB_OUTPUT"
+            echo "${mm} -> ${full}"
+          done
+
+      - name: Create multi-arch manifests
+        shell: bash
+        env:
+          PHP83: ${{ steps.versions.outputs.php83 }}
+          PHP84: ${{ steps.versions.outputs.php84 }}
+          PHP85: ${{ steps.versions.outputs.php85 }}
+          PHP86: ${{ steps.versions.outputs.php86 }}
+        run: |
+          set -euo pipefail
+          ls -la /tmp/digests
+          REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          create_for() {
+            local mm="$1" full="$2"
+            local amd64 arm64
+            amd64="$(cat "/tmp/digests/${mm}-linux-amd64")"
+            arm64="$(cat "/tmp/digests/${mm}-linux-arm64")"
+            echo "Merging ${mm} (${full}): sha256:${amd64} + sha256:${arm64}"
+
+            TAGS=(-t "${REF}:${mm}" -t "${REF}:${full}")
+            if [ "${mm}" = "8.6" ]; then
+              TAGS+=(-t "${REF}:latest")
+            fi
+
+            docker buildx imagetools create \
+              "${TAGS[@]}" \
+              "${REF}@sha256:${amd64}" \
+              "${REF}@sha256:${arm64}"
+          }
+
+          create_for 8.3 "${PHP83}"
+          create_for 8.4 "${PHP84}"
+          create_for 8.5 "${PHP85}"
+          create_for 8.6 "${PHP86}"
+
+          {
+            echo "### Published tags"
+            echo "- \`ghcr.io/rechtlogisch/php-cli-capsula:8.3\` / \`${PHP83}\`"
+            echo "- \`ghcr.io/rechtlogisch/php-cli-capsula:8.4\` / \`${PHP84}\`"
+            echo "- \`ghcr.io/rechtlogisch/php-cli-capsula:8.5\` / \`${PHP85}\`"
+            echo "- \`ghcr.io/rechtlogisch/php-cli-capsula:8.6\` / \`${PHP86}\` / \`latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify deployer (repository_dispatch)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          DEPLOYER_DISPATCH_TOKEN: ${{ secrets.DEPLOYER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOYER_DISPATCH_TOKEN:-}" ]; then
+            echo "::notice::DEPLOYER_DISPATCH_TOKEN secret missing; skipping repository_dispatch to rechtlogisch/deployer"
+            echo "Skipped capsula-updated dispatch (secret missing)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${DEPLOYER_DISPATCH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/rechtlogisch/deployer/dispatches \
+            -d '{"event_type":"capsula-updated","client_payload":{"source":"php-cli-capsula","sha":"'"${GITHUB_SHA}"'"}}'
+          echo "Dispatched capsula-updated to rechtlogisch/deployer" >> "$GITHUB_STEP_SUMMARY"

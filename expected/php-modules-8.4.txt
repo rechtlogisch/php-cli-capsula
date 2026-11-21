@@ -1,0 +1,14 @@
+[PHP Modules]
+Core
+curl
+date
+hash
+iconv
+json
+pcre
+random
+Reflection
+SPL
+standard
+
+[Zend Modules]
