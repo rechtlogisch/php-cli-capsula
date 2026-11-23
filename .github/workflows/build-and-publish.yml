@@ -19,6 +19,9 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: rechtlogisch/php-cli-capsula
+  # Default for publish/merge: annotate both image manifest and multi-arch index.
+  # Overridden to "manifest" only on pull_request (see step below) because
+  # single-platform `load` rejects index annotations.
   DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
 jobs:
@@ -78,6 +81,17 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Annotation levels for this event
+        shell: bash
+        run: |
+          # Single-platform docker load/export cannot attach OCI *index* annotations
+          # ("index annotations not supported for single platform export").
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "DOCKER_METADATA_ANNOTATIONS_LEVELS=manifest" >> "$GITHUB_ENV"
+          else
+            echo "DOCKER_METADATA_ANNOTATIONS_LEVELS=manifest,index" >> "$GITHUB_ENV"
+          fi
 
       - name: Docker metadata (OCI labels + annotations)
         id: meta

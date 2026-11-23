@@ -68,14 +68,24 @@ ${DOCKER} run --rm \
   '
 
 echo "==> versions for summary"
+# Avoid piping to `sed` inside ash under QEMU: BusyBox ash+prefer-applets can
+# mis-resolve `sed` as applet ":" (exit 127). Prefer file + echo instead.
 run sh -c '
-  echo "php: $(php -v | head -n 1)"
-  echo "curl: $(php -r "echo curl_version()[\"version\"];")"
-  ssh -V 2>&1 | head -n 1 | sed "s/^/openssh: /"
-  echo "busybox: static $(wc -c < /bin/busybox) bytes"
+  set -eu
+  php -v > /tmp/php.v
+  LINE=$(head -n 1 /tmp/php.v)
+  echo "php: ${LINE}"
+  php -r "echo \"curl: \".curl_version()[\"version\"].PHP_EOL;"
+  ssh -V > /tmp/ssh.v 2>&1 || true
+  LINE=$(head -n 1 /tmp/ssh.v)
+  echo "openssh: ${LINE}"
+  # Prefer sizes.env (written at image build); avoid `wc -c` under QEMU ash
+  # which can mis-resolve the `-c` flag as applet "c".
   if [ -f /.capsula/sizes.env ]; then
     echo "--- sizes ---"
-    cat /.capsula/sizes.env
+    /bin/cat /.capsula/sizes.env
+  else
+    echo "busybox: present at /bin/busybox"
   fi
 '
 
